@@ -3,7 +3,6 @@ import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-# Force Python to look in the script's directory for the model
 SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.argv[0] if sys.argv[0] else __file__))
 os.chdir(SCRIPT_DIR)
 MODEL_PATH = os.path.join(SCRIPT_DIR, "hand_landmarker.task")
@@ -11,14 +10,14 @@ MODEL_PATH = os.path.join(SCRIPT_DIR, "hand_landmarker.task")
 SCROLL_SPEED = 300
 CAM_WIDTH, CAM_HEIGHT = 640, 480
 latest_result = None
+last_scroll = p_time = 0
 
-# MediaPipe connections map (Which landmark connects to which)
 HAND_CONNECTIONS = [
-    (0,1), (1,2), (2,3), (3,4),       # Thumb
-    (0,5), (5,6), (6,7), (7,8),       # Index
-    (5,9), (9,10), (10,11), (11,12),  # Middle
-    (9,13), (13,14), (14,15), (15,16),# Ring
-    (13,17), (0,17), (17,18), (18,19), (19,20) # Pinky
+    (0,1), (1,2), (2,3), (3,4),
+    (0,5), (5,6), (6,7), (7,8),
+    (5,9), (9,10), (10,11), (11,12),
+    (9,13), (13,14), (14,15), (15,16),
+    (13,17), (0,17), (17,18), (18,19), (19,20)
 ]
 
 def receive_result(result: vision.HandLandmarkerResult, output_image: mp.Image, timestamp_ms: int): # type: ignore
@@ -36,13 +35,11 @@ options = vision.HandLandmarkerOptions(
 detector = vision.HandLandmarker.create_from_options(options)
 
 def draw_custom_landmarks(frame, landmarks, w, h):
-    # Draw connection lines
     for connection in HAND_CONNECTIONS:
         start_idx, end_idx = connection
         pt1 = (int(landmarks[start_idx].x * w), int(landmarks[start_idx].y * h))
         pt2 = (int(landmarks[end_idx].x * w), int(landmarks[end_idx].y * h))
         cv2.line(frame, pt1, pt2, (0, 255, 0), 2)
-    # Draw joint dots
     for lm in landmarks:
         cx, cy = int(lm.x * w), int(lm.y * h)
         cv2.circle(frame, (cx, cy), 5, (0, 0, 255), cv2.FILLED)
@@ -65,7 +62,6 @@ def detect_gesture(hand_landmarks, handedness_label):
 cap = cv2.VideoCapture(1)
 cap.set(3, CAM_WIDTH)
 cap.set(4, CAM_HEIGHT)
-last_scroll = p_time = 0
 
 WIN = "Gesture Control"
 cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
@@ -89,8 +85,6 @@ while cap.isOpened():
                 handedness_label = latest_result.handedness[idx][0].category_name
             
             gesture = detect_gesture(hand_landmarks, handedness_label)
-            
-            # Use our custom drawing function instead of legacy tools
             draw_custom_landmarks(frame, hand_landmarks, w, h)
 
             if (time.time() - last_scroll) > 0.5:
