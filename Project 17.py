@@ -1,0 +1,144 @@
+import cv2, time, pyautogui, os, sys
+import mediapipe as mp
+import numpy as np
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.argv[0] if sys.argv[0] else __file__))
+os.chdir(SCRIPT_DIR)
+MODEL_PATH = os.path.join(SCRIPT_DIR, "hand_landmarker.task")
+
+SCROLL_SPEED = 300
+CAM_WIDTH, CAM_HEIGHT = 640, 480
+latest_result = None
+is_zoomed = False
+last_scroll = p_time = 0
+
+HAND_CONNECTIONS = [
+    (0,1), (1,2), (2,3), (3,4),
+    (0,5), (5,6), (6,7), (7,8),
+    (5,9), (9,10), (10,11), (11,12),
+    (9,13), (13,14), (14,15), (15,16),
+    (13,17), (0,17), (17,18), (18,19), (19,20)
+]
+
+def receive_result(result: vision.HandLandmarkerResult, output_image: mp.Image, timestamp_ms: int): # type: ignore
+    global latest_result
+    latest_result = result
+
+base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
+options = vision.HandLandmarkerOptions(
+    base_options=base_options,
+    running_mode=vision.RunningMode.LIVE_STREAM,
+    num_hands=2,
+    min_hand_detection_confidence=0.5,
+    result_callback=receive_result
+)
+detector = vision.HandLandmarker.create_from_options(options)
+
+def draw_custom_landmarks(frame, landmarks, w, h):
+    for connection in HAND_CONNECTIONS:
+        start_idx, end_idx = connection
+        pt1 = (int(landmarks[start_idx].x * w), int(landmarks[start_idx].y * h))
+        pt2 = (int(landmarks[end_idx].x * w), int(landmarks[end_idx].y * h))
+        cv2.line(frame, pt1, pt2, (0, 255, 0), 2)
+    for lm in landmarks:
+        cx, cy = int(lm.x * w), int(lm.y * h)
+        cv2.circle(frame, (cx, cy), 5, (0, 0, 255), cv2.FILLED)
+
+def get_finger_count(hand_landmarks, handedness_label):
+    fingers = []
+    tips = [8, 12, 16, 20]
+    for tip in tips:
+        if hand_landmarks[tip].y < hand_landmarks[tip - 2].y:
+            fingers.append(1)
+    thumb_tip = hand_landmarks[4]
+    thumb_ip = hand_landmarks[3]
+    if (handedness_label == "Right" and thumb_tip.x > thumb_ip.x) or \
+       (handedness_label == "Left" and thumb_tip.x < thumb_ip.x):
+        fingers.append(1)
+    return sum(fingers)
+
+cap = cv2.VideoCapture(1)
+cap.set(3, CAM_WIDTH)
+cap.set(4, CAM_HEIGHT)
+
+WIN = "Gesture Control Hub"
+cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
+
+while cap.isOpened():
+    success, frame = cap.read()
+    if not success: break
+
+    frame = cv2.flip(frame, 1)
+    h, w, _ = frame.shape
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+    
+    detector.detect_async(mp_image, int(time.time() * 1000))
+    
+    scroll_state = "none"
+    handedness_label = "Unknown"
+
+    if latest_result and latest_result.hand_landmarks:
+        hands_data = {}
+        
+        for idx, hand_landmarks in enumerate(latest_result.hand_landmarks):
+            if idx < len(latest_result.handedness):
+                lbl = latest_result.handedness[idx][0].category_name
+                hands_data[lbl] = hand_landmarks
+                handedness_label = lbl
+            draw_custom_landmarks(frame, hand_landmarks, w, h)
+
+        if len(latest_result.hand_landmarks) == 2 and "Left" in hands_data and "Right" in hands_data:
+            l_hand = hands_data["Left"]
+            r_hand = hands_data["Right"]
+
+            l_count = get_finger_count(l_hand, "Left")
+            r_count = get_finger_count(r_hand, "Right")
+
+            if l_count == 0 and r_count == 0:
+                if not is_zoomed:
+                    pyautogui.keyDown('ctrl')
+                    pyautogui.press('=')
+                    pyautogui.keyUp('ctrl')
+                    is_zoomed = True
+            elif l_count == 5 and r_count == 5:
+                if is_zoomed:
+                    pyautogui.keyDown('ctrl')
+                    pyautogui.press('-')
+                    pyautogui.keyUp('ctrl')
+                    is_zoomed = False
+
+        elif len(latest_result.hand_landmarks) == 1:
+            single_hand = latest_result.hand_landmarks[0]
+            f_count = get_finger_count(single_hand, handedness_label)
+            scroll_state = "scroll up" if f_count == 5 else "scroll down" if f_count == 0 else "none"
+            
+            if (time.time() - last_scroll) > 0.5:
+                if scroll_state == "scroll up":
+                    pyautogui.scroll(SCROLL_SPEED)
+                elif scroll_state == "scroll down":
+                    pyautogui.scroll(-SCROLL_SPEED)
+                last_scroll = time.time()
+
+    c_time = time.time()
+    fps = 1 / (c_time - p_time) if (c_time - p_time) > 0 else 0
+    p_time = c_time
+    
+    cv2.putText(frame, f"FPS: {int(fps)} | Zoomed: {is_zoomed} | Scroll: {scroll_state}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+    
+    cv2.imshow(WIN, frame)
+    
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('e') or key == 27:
+        break
+    try:
+        if cv2.getWindowProperty(WIN, cv2.WND_PROP_VISIBLE) < 1: break
+    except:
+        break
+
+detector.close()
+cap.release()
+cv2.destroyAllWindows()
